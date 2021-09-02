@@ -116,3 +116,5 @@ The current directory being displayed.
 ```javascript
 pwd: String
 ```
+
+![tracking pixel](https://lynks.cc/ghfilebrowser/track)
