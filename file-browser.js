@@ -41,14 +41,6 @@ const FONTS = {
   SUBTITLE: null,
   ERROR: Font.italicSystemFont(10)
 }
-/* **********************************************
-FileInfo Class
-********************************************** */
-class FileInfo {
-  constructor(path) {
-
-  }
-}
 
 /* **********************************************
 FileBrowser Class
