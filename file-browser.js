@@ -48,10 +48,12 @@ FileBrowser Class
 class FileBrowser {
 
   //---------------------------------------------
-  constructor(path, {canBrowseParent=false, precheckAccess=true}={}) {
+  constructor(path="/", {canBrowseParent=false, precheckAccess=true, fullscreen=true}={}) {
+    path = path ? path : '/'
     let pwd = path
+    canBrowseParent = path == '/' ? false : canBrowseParent
     let manager = path.includes('iCloud') ? FileManager.iCloud() : FileManager.local()
-    Object.assign(this, {path, manager, pwd, canBrowseParent, precheckAccess})
+    Object.assign(this, {path, manager, pwd, canBrowseParent, precheckAccess, fullscreen})
   }
 
   //---------------------------------------------
@@ -97,13 +99,16 @@ class FileBrowser {
       table.addRow(row)
     }
 
-    await table.present(true)
+    await table.present(this.fullscreen)
     return selected
 
   }
   //---------------------------------------------
   async present() {
-      
+
+    //log(`pwd = ${this.pwd}`)
+    this.pwd = this.pwd ? this.pwd : '/'
+    
     const browser = new UITable()
     browser.showSeparators = true
 
@@ -135,7 +140,7 @@ class FileBrowser {
     try {
       dirContents = this.manager.listContents(this.pwd)
       // add the .. if not the root folder
-      if (this.path != this.pwd || this.canBrowseParent) {
+      if (this.pwd != '/' & ( this.path != this.pwd || this.canBrowseParent )) {
         objects.push( {name:'..', type:'dir', path:'..', isDir:true, displayName:'..', canAccess: true, icon: ICONS.dir} )
       }
 
@@ -212,7 +217,7 @@ class FileBrowser {
     }
 
     const fileBrowser = this
-    let resp = await browser.present(true)
+    let resp = await browser.present(this.fullscreen)
 
     if (!selected) return null
 
@@ -286,6 +291,7 @@ function identify(actualPath, manager, precheckAccess) {
         manager.listContents(path)
         canAccess = true
       } catch(e) {
+        //log(`${name} : ${e.message}`)
         canAccess = false
         titleColor = COLORS.ERROR
       }

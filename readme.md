@@ -42,8 +42,9 @@ new FileBrowser(path, options)
 `path` : the directory to browse
 
 `options` : a JSON value indicating the additional options to change the behaviour of the browser
-- `canBrowseParent: Boolean`: allow browsing above the initial path. Useful for exploring outside the known directories.
-- `precheckAccess: Boolean`: while listing directory contents, check each sub-directory is accessible or not. Inaccessible directories will be colored in red.
+- `canBrowseParent: Boolean`: allow browsing above the initial path. Useful for exploring outside the known directories. Default *false*.
+- `precheckAccess: Boolean`: while listing directory contents, check each sub-directory is accessible or not. Inaccessible directories will be colored in red. Default *true*.
+- `fullscreen: Boolean`: open the file browser in fullscreen. Default *true*.
 
 ---
 
@@ -86,6 +87,15 @@ Allow browsing above the inital path. Useful for exploring outside the known dir
 ```javascript
 canBrowseParent: Boolean
 ```
+---
+
+### fullscreen
+
+Open the file browser in full screen.
+
+```javascript
+fullscreen: Boolean
+```
 
 --- 
 
@@ -117,4 +127,34 @@ The current directory being displayed.
 pwd: String
 ```
 
+## Examples
+
+### Browse a bookmarked path
+
+```javascript
+const path = FileManager.bookmarkedPath('Shortcuts')
+const browser = new FileBrowser(path)
+const file = await browser.present()
+```
+
+### Open a specific folder
+
+```javascript
+const {FileBrowser} = importModule('file-browser')
+const path = '/Developer'
+const browser = new FileBrowser(path)
+const file = await browser.present()
+```
+
+### Disable access precheck
+
+```javascript
+const {FileBrowser} = importModule('file-browser')
+const path = '/Developer'
+const browser = new FileBrowser(path, {precheckAccess:false})
+const file = await browser.present()
+```
+
 ![tracking pixel](https://lynks.cc/ghfilebrowser/track)
+
+
