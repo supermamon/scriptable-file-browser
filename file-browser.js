@@ -3,17 +3,21 @@
 // always-run-in-app: true; icon-color: blue;
 // icon-glyph: folder;
 
-
 /* -----------------------------------------------
 
 Script      : file-browser.js
 Author      : me@supermamon.com
-Version     : 1.0.0
+Version     : 1.1.0
 Repository  : https://github.com/supermamon/scriptable-file-browser
 Description :
   A module to browse iCloud or local files
 
 Changelog   :
+v1.1.0 | 11 Sep 2021
+- (update) better handling of files not readable as text
+- (new) additional viewers
+- (new) `addViewer` method to allow adding third-party viewers.
+- (new) `FileInfo` class
 v1.0.0 | 2 Sep 2021
 - Initial release
 ----------------------------------------------- */
@@ -23,24 +27,114 @@ const MAX_HEADER_CHARACTERS = 40
 const BACK_ARROW = "\u2B05\uFE0F"
 const CLOUD_CHAR = "\u2601"
 
+// file type icons
 const ICONS = {
   dir: "\uD83D\uDCC1",
   file: "\uD83D\uDCC4",
   image: "\uD83C\uDFDE\uFE0F"
 }
 
+// default colors
 const COLORS = {
   TITLE : Color.dynamic(Color.black(), Color.white()),
   SUBTITLE: Color.dynamic(Color.darkGray(), Color.lightGray()),
   ERROR: Color.red(),
 }
 
+// default font sizes
 const FONTS = {
   HEADER: Font.lightMonospacedSystemFont(12),
   TITLE: Font.systemFont(15),
   SUBTITLE: null,
   ERROR: Font.italicSystemFont(10)
 }
+
+
+/* **********************************************
+FileInfo Class
+- extract metadata from the file
+- usage
+   const file = new FileInfo('/System/Library/info.plist')
+
+********************************************** */
+class FileInfo {
+  constructor(filePath, {testAccess=false}={}) {
+
+    const manager = filePath.includes('iCloud') ? FileManager.iCloud() : FileManager.local()
+
+    // main types
+    const isDir = manager.isDirectory(filePath)
+    const type = manager.isDirectory(filePath) ? 'dir' : 'file'
+
+    // name and path info 
+    const nameOnDisk = manager.fileName(filePath, true)
+    const pathOnDisk = filePath
+    const parent = filePath.replace(/[^\/]+$/,'')
+    const name =  nameOnDisk.replace(/\.icloud$/,'').replace(/^\./,'') 
+    const path = manager.joinPath(parent, name)
+    const basename = manager.fileName(path, false)
+    const extension = manager.fileExtension(path).toLowerCase()
+
+
+    // sub-types
+    const isImage = /(jpg|gif|png|jpeg|heic|heif)$/i.test(name)
+
+    // files on iCloud have the format .File.Ext.icloud
+    const isCloudAlias = /\.icloud$/.test(filePath)    
+
+    //
+    const size = isDir ?  0 : manager.fileSize(path)
+    const uti = manager.getUTI(path)
+    const isOnCloud = !manager.isFileDownloaded(path)
+    const modified = type == 'file' ? manager.modificationDate(path) : null
+
+
+    const knownTypes = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      png: "image/png",
+      heic: "image/heic",
+      heif: "image/heif",
+      json: "application/json",
+      txt: "text/plain",
+      js: "text/javascript",
+      plist: "application/xml",
+      xml: "text/xml",
+      caf: "audio/x-caf"
+    }
+
+    let mimetype;
+    if (!extension) {
+      mimetype = "application/octet-stream"
+    } else {
+      mimetype = knownTypes[extension]
+    }
+    if (!mimetype) mimetype = "application/octet-stream"
+
+
+
+    let canAccess = true
+    let itemCount = 0
+    if (testAccess & isDir) {
+      try {
+        const items = manager.listContents(path)
+        itemCount = items.length
+        canAccess = true
+      } catch(e) {
+        canAccess = false
+      }
+    }
+
+    return {
+      isDir, type, nameOnDisk, pathOnDisk, parent, name, basename, path, size, isOnCloud, modified,
+      isImage, mimetype, canAccess, itemCount, uti,extension, isCloudAlias
+    }
+
+  }
+
+}
+
 
 /* **********************************************
 FileBrowser Class
@@ -60,16 +154,21 @@ class FileBrowser {
   static async pickScriptableDirectory() {
     
     // local paths
-    const dirs = [
+    let dirs = [
       {name: 'documentsDirectory', fm: 'local'},
       {name: 'libraryDirectory', fm: 'local'},
       {name: 'temporaryDirectory', fm: 'local'},
       {name: 'cacheDirectory', fm: 'local'},
+      {path: '/System/Library'},
+      {path: '/'}
     ]
     // if using iCloud, add the iCloud path
     if (module.filename.includes('Documents/iCloud')) {
-      dirs.push({name: 'documentsDirectory', fm: 'iCloud'})
-      dirs.push({name: 'libraryDirectory', fm: 'iCloud'})
+      const iCloudDirs = [
+        {name: 'documentsDirectory', fm: 'iCloud'},
+        {name: 'libraryDirectory', fm: 'iCloud'}
+      ]
+      dirs = [...iCloudDirs, ...dirs]
     }
 
 
@@ -89,7 +188,8 @@ class FileBrowser {
       const icon = row.addText(ICONS.dir)
       icon.widthWeight = 8
 
-      const cell = row.addText(`/${dir.fm}/${dir.name}`)
+      const text = dir.path ? dir.path : `/${dir.fm}/${dir.name}`
+      const cell = row.addText(text)
       cell.widthWeight = 92
 
       row.onSelect = (index) => {
@@ -103,7 +203,11 @@ class FileBrowser {
     return selected
 
   }
+
   //---------------------------------------------
+  // -present: show the directory listing with 
+  //    of the current path. return the selected
+  //    file
   async present() {
 
     //log(`pwd = ${this.pwd}`)
@@ -243,24 +347,176 @@ class FileBrowser {
 
 
   }  
+  // -pickFile: alias to -present()
+  async pickFile() {
+    // alias to present
+    return await this.present()
+  }
+
+  //---------------------------------------------
+  // +browse: launch the browser/viewer
+  static async browse(path, {canBrowseParent=true, precheckAccess=true, fullscreen=true}={}) {
+    const pathIsPassed = !!path
+
+    while(true) {
+
+      if (!pathIsPassed) {
+        const root = await FileBrowser.pickScriptableDirectory()
+        if (!root) break
+        path = root.path ? root.path : FileManager[root.fm]()[root.name]()
+      }
+  
+      const f = new FileBrowser(path, {canBrowseParent, precheckAccess, fullscreen})
+      let file;
+
+      while (true){
+        file = await f.present()
+        if(!file) break;
+        await FileBrowser.view(file.path)
+      }
+
+      // stop browsing if path is passed but no file is selected
+      if(pathIsPassed && !file) break;
+      return file
+
+  }
+
+
+  }
+  
   //---------------------------------------------
   async previewFile(path, file) {
-    if (!file) file = identify(path)
-    if (file.isOnCloud) {
-      await this.manager.downloadFileFromiCloud(file.path)
+    log.warn('previewFile is deprecated and will be obsolete on v2.0. Use FileBrowser.view() instead.')
+    return await FileBrowser.view(path)
+  }
+
+  //---------------------------------------------
+  static async view(path) {
+    const file = new FileInfo(path)
+    if (FileBrowser.viewers[file.mimetype]) {
+      await FileBrowser.viewers[file.mimetype](path)
+    } else {
+      await FileBrowser.viewOctet(path)
     }
-    let contents;
+  }
+  //---------------------------------------------
+  static viewers = {
+    "image/jpeg": FileBrowser.viewImage,
+    "image/jpeg": FileBrowser.viewImage,
+    "image/gif": FileBrowser.viewImage,
+    "image/png": FileBrowser.viewImage,
+    "image/heic": FileBrowser.viewImage,
+    "image/heif": FileBrowser.viewImage,
+    "application/json": FileBrowser.viewJSON,
+    "text/plain": FileBrowser.viewText,
+    "text/javascript": FileBrowser.viewPath,
+    "text/xml": FileBrowser.viewText,
+    "application/xml": FileBrowser.viewOctet,
+    "audio/x-caf": FileBrowser.viewPath,
+  }
+  //---------------------------------------------
+  static addViewer(viewer) {
+    FileBrowser.viewers[viewer.mimetype] = viewer.view
+  }
+
+  //---------------------------------------------
+  static async viewImage(path) {
+    const file = new FileInfo(path)
+    let content;
     try {
-      contents = file.isImage ? this.manager.readImage(file.path) : this.manager.readString(file.path)
-      contents = contents ? contents : '<eof>'
-    } catch (e) {
-      contents = `error: ${e.message}`
+      if (file.isOnCloud) {
+        await FileManager.iCloud().downloadFileFromiCloud(file.path)
+        content = FileManager.iCloud().readImage(file.path)
+      } else {
+        content = FileManager.local().readImage(file.path)
+      }
+      if (!content) content = '<unable to read file contents>'
+    } catch(e) {
+      content = e.message
     }
-    await QuickLook.present(contents, true)
+    await QuickLook.present(content, true)
+  }
+  //---------------------------------------------
+  static async viewText(path) {
+    const file = new FileInfo(path)
+    let content;
+    try {
+      if (file.isOnCloud) {
+        await FileManager.iCloud().downloadFileFromiCloud(file.path)
+        content = FileManager.iCloud().readString(file.path)
+      } else {
+        content = FileManager.local().readString(file.path)
+      }
+      if (!content) content = '<unable to read file contents>'
+    } catch(e) {
+      content = e.message
+    }
+    await QuickLook.present(content, false)
+  }
+  //---------------------------------------------
+  static async viewJSON(path) {
+    const file = new FileInfo(path)
+    let content;
+    try {
+      if (file.isOnCloud) {
+        await FileManager.iCloud().downloadFileFromiCloud(file.path)
+        content = FileManager.iCloud().readString(file.path)
+
+      } else {
+        content = FileManager.local().readString(file.path)
+      }
+      if (!content) { 
+        content = '<unable to read file contents>'
+      } else {
+        content = JSON.parse(content)
+      }
+      
+    } catch(e) {
+      content = e.message
+    }
+    await QuickLook.present(content, false)
+  }
+
+  //---------------------------------------------
+  static async viewPath(path) {
+    await QuickLook.present(path)
+  }
+  
+  //---------------------------------------------
+  static async viewOctet(path) {
+    const manager = path.includes('iCloud') ? FileManager.iCloud() : FileManager.local()
+    const file = new FileInfo(path)
+    let content;
+    try {
+      if (file.isOnCloud) {
+        await manager.downloadFileFromiCloud(file.path)
+      } 
+
+      // try reading as string
+      content = manager.readString(file.path)
+      if (!content) {
+        // try as Data
+        content = manager.read(file.path)
+        if (content) {
+          content = content.getBytes()
+                    .map( ch => String.fromCharCode(ch) )
+                    .join('')
+        }
+      } 
+      if (!content) {
+          content = '<unable to read contents>'
+      }
+
+    } catch(e) {
+      content = e.message
+    }
+    await QuickLook.present(content, false)
   }
 
 
 }
+
+
 
 /* **********************************************
 Helper Functions
@@ -269,43 +525,29 @@ Helper Functions
 // ==============================================
 function identify(actualPath, manager, precheckAccess) {
 
-    // attributes
-    const isDir = manager.isDirectory(actualPath)
-    const type = manager.isDirectory(actualPath) ? 'dir' : 'file'
-    const actualName =  manager.fileName(actualPath, true)
-
-    // files on iCloud have the format .File.Ext.icloud
-    const name = actualName.replace(/\.icloud$/,'').replace(/^\./,'')
-    const path = actualPath.replace(actualName, name)
-
-    const size = type=='dir' ?  0 : manager.fileSize(actualPath)
-    const uti = manager.getUTI(actualPath)
-    const isOnCloud = !manager.isFileDownloaded(actualPath)
-    const modified = type == 'file' ? manager.modificationDate(actualPath) : null
-    const isImage = /(jpg|gif|png|jpeg|heic|heif)$/i.test(name)
-
-    let canAccess = true
-    let titleColor = COLORS.TITLE
-    if (precheckAccess && isDir) {
-      try {
-        manager.listContents(path)
-        canAccess = true
-      } catch(e) {
-        //log(`${name} : ${e.message}`)
-        canAccess = false
-        titleColor = COLORS.ERROR
-      }
-    }
+    const file = new  FileInfo(actualPath, {testAccess: precheckAccess})
 
     // displayAttributes
-    const icon = ICONS[  isImage ? 'image' : type ]
-    const displayName =  isDir ? `${name}/` : name
+    const icon = ICONS[  file.isImage ? 'image' : file.type ]
 
-    const formattedDate = (type=='file' ? `${formatDate(modified)}` : '')
-    const formattedSize = type == 'file' ? !isOnCloud ? !!size ? `${size} KB` : '' : CLOUD_CHAR :  ''
-    const subtitle =  formattedDate + (formattedDate && formattedSize ? ' - ' : '') + formattedSize    
+    let titleColor = file.canAccess ? COLORS.TITLE : COLORS.ERROR
+
+    const displayName =  file.isDir ? `${file.name}/` : file.name
+    const formattedDate = (file.type=='file' ? `${formatDate(file.modified)}` : '')
+    const formattedSize = file.type == 'file' ? !file.isOnCloud ? !!file.size ? `${file.size} KB` : '' : CLOUD_CHAR :  ''
+
+    let subtitle;
+    if (file.isDir) {
+      if (precheckAccess && file.canAccess) {
+        subtitle = `${file.itemCount} item${file.itemCount>1?'s':''}`
+      }
+    } else {
+      subtitle = formattedDate + (formattedDate && formattedSize ? ' - ' : '') + formattedSize
+    }
+
+    Object.assign(file, {displayName, subtitle, icon, titleColor})
     
-    return {type, name, path, size, isDir, uti, isOnCloud, modified, displayName, subtitle, isImage, canAccess, icon, titleColor}
+    return file
 
 }
 // ==============================================
@@ -354,8 +596,9 @@ function hier(path, maxLineLength) {
 
 }
 
+
 // ==============================================
-module.exports = {FileBrowser}
+module.exports = {FileBrowser, FileInfo}
 
 
 // ==============================================
@@ -365,18 +608,7 @@ const module_name = module.filename.match(/[^\/]+$/)[0].replace('.js', '')
 if (module_name == Script.name()) {
   await (async () => {
 
-    while(true) {
-        const root = await FileBrowser.pickScriptableDirectory()
-        if (!root) break
-        const path = FileManager[root.fm]()[root.name]()
-    
-        const f = new FileBrowser(path, {canBrowseParent: true, precheckAccess:true})
-        while (true){
-          const file = await f.present()
-          if(!file) break;
-          await f.previewFile(file.path, file)
-        }
-    }
+    while (await FileBrowser.browse()) {}
 
   })()
 }
